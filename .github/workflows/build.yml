@@ -1,0 +1,189 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksunext_ref:
+        description: 'KernelSU-Next ref (branch/tag/commit). legacy = non-GKI support'
+        required: true
+        default: 'legacy'
+      kernel_branch:
+        description: 'kernel_xiaomi_raphael branch'
+        required: true
+        default: 'thirteen'
+      release:
+        description: 'Publish a GitHub Release'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'patches/**'
+      - 'anykernel/**'
+      - 'scripts/**'
+      - '.github/workflows/build.yml'
+  schedule:
+    # Weekly, to pick up new KernelSU-Next (legacy) commits.
+    - cron: '0 3 * * 6'
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_REPO: https://github.com/PixelExperience-Devices/kernel_xiaomi_raphael.git
+  KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+  AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev make zip unzip cpio rsync \
+            python3 python3-pip device-tree-compiler lz4 xz-utils zstd
+
+      - name: Ensure GNU Make 4.3
+        run: |
+          # Linux 4.14's Kbuild breaks on GNU Make >= 4.4:
+          #   scripts/Makefile.lib:416 *** recipe commences before first target
+          ver=$(make --version | head -1 | grep -oE '[0-9]+\.[0-9]+')
+          major=${ver%%.*}; minor=${ver##*.}
+          if [ "$major" -gt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -ge 4 ]; }; then
+            echo "make $ver is too new for a 4.14 kernel; building make 4.3"
+            curl -fsSL -o make.tar.gz https://ftp.gnu.org/gnu/make/make-4.3.tar.gz
+            tar xf make.tar.gz
+            ( cd make-4.3 && ./configure --prefix="$PWD/../make43" >/dev/null && make -j"$(nproc)" >/dev/null && make install >/dev/null )
+            echo "MAKE_BIN=$PWD/make43/bin/make" >> "$GITHUB_ENV"
+          else
+            echo "make $ver is fine"
+            echo "MAKE_BIN=$(command -v make)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch PE-matching toolchain
+        run: ./scripts/setup-toolchain.sh "$PWD/toolchain"
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth 1 -b "${{ github.event.inputs.kernel_branch || 'thirteen' }}" \
+            --no-tags "$KERNEL_REPO" kernel
+          echo "KERNEL_COMMIT=$(git -C kernel rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          git -C kernel log --oneline -1
+
+      - name: Clone KernelSU-Next
+        env:
+          KSU_REF: ${{ github.event.inputs.ksunext_ref || 'legacy' }}
+        run: |
+          # Full clone: the version number is derived from the commit count.
+          git clone -b "$KSU_REF" "$KSU_REPO" KernelSU-Next
+          echo "KSU_COMMIT=$(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          git -C KernelSU-Next log --oneline -1
+          COUNT=$(git -C KernelSU-Next rev-list --count HEAD)
+          echo "KSU_VERSION=$((30000 + COUNT + 200))" >> "$GITHUB_ENV"
+          TAG=$(git -C KernelSU-Next describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "KSU_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Apply integration patches
+        run: |
+          set -e
+          cd kernel
+          for p in ../patches/*.patch; do
+            echo "==> applying $(basename "$p")"
+            # Fail loudly: a silent mis-integration is worse than a red build.
+            git apply --verbose "$p"
+          done
+          ln -sfn ../../KernelSU-Next/kernel drivers/kernelsu
+          ls -l drivers/kernelsu
+          cd ..
+          echo "=== defconfig KSU entries ==="
+          grep -E '^CONFIG_KSU' kernel/arch/arm64/configs/raphael_defconfig
+
+      - name: Build kernel
+        run: |
+          set -e
+          export PATH="$PWD/toolchain/clang-r416183b/bin:$PWD/toolchain/gnu/bin:$PATH"
+          MAKE_ARGS=(
+            O=out ARCH=arm64
+            CC=clang
+            LD=aarch64-linux-gnu-ld
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          )
+          echo "=== toolchain ==="
+          clang --version | head -1
+          aarch64-linux-gnu-ld --version | head -1
+          aarch64-linux-gnu-as --version | head -1
+          cd kernel
+          "$MAKE_BIN" "${MAKE_ARGS[@]}" raphael_defconfig
+          "$MAKE_BIN" "${MAKE_ARGS[@]}" -j"$(nproc)"
+          "$MAKE_BIN" "${MAKE_ARGS[@]}" Image.gz-dtb dtbo.img
+
+          echo "=== verification ==="
+          grep -E "ksu_handle_(execveat|setresuid|sys_reboot|stat|faccessat|sys_read|input_handle_event)" \
+            out/System.map || { echo "!! KernelSU hooks missing"; exit 1; }
+          strings out/vmlinux | grep -m1 "Linux version"
+          echo "KERNEL_RELEASE=$(cat out/include/config/kernel.release)" >> "$GITHUB_ENV"
+
+      - name: Assemble AnyKernel3 flashable zip
+        run: |
+          set -e
+          git clone --depth 1 "$AK3_REPO" AnyKernel3
+          cd AnyKernel3
+          rm -rf .git .github
+          # Our installer: split_boot+flash_boot (no ramdisk in boot.img on this device)
+          cp ../anykernel/anykernel.sh anykernel.sh
+          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          # dtbo.img is intentionally not shipped: identical to stock, and the
+          # dtbo partition carries AVB metadata the installer must not disturb.
+          rm -f dtbo.img
+          ZIP="KernelSU-Next-raphael-${KERNEL_RELEASE}-${KSU_TAG}-${KSU_VERSION}-$(date +%Y%m%d).zip"
+          zip -r9 "../$ZIP" . -x ".git/*" -x "README.md" >/dev/null
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          cd ..
+          ls -la "$ZIP"
+          sha256sum "$ZIP"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-images-${{ env.KSU_COMMIT }}
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/System.map
+            kernel/out/arch/arm64/boot/dtbo.img
+          if-no-files-found: error
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+
+      - name: Publish release
+        if: ${{ github.event.inputs.release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.KSU_TAG }}-${{ env.KERNEL_COMMIT }}-${{ github.run_number }}
+          name: KernelSU-Next ${{ env.KSU_VERSION }} for raphael (${{ env.KERNEL_RELEASE }})
+          body: |
+            KernelSU-Next `${{ env.KSU_TAG }}` (version `${{ env.KSU_VERSION }}`, commit `${{ env.KSU_COMMIT }}`)
+            built on kernel `${{ env.KERNEL_RELEASE }}` (`${{ env.KERNEL_COMMIT }}`).
+
+            - Device: Xiaomi Redmi K20 Pro / Mi 9T Pro (raphael / raphaelin)
+            - Mode: manual hook (non-GKI)
+            - Toolchain: Android clang r416183b + GNU ld 2.27
+
+            Flash the zip in a third-party recovery. The stock ramdisk is preserved.
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false

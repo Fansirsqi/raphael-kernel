@@ -1,0 +1,130 @@
+diff --git a/drivers/platform/msm/gsi/gsi.c b/drivers/platform/msm/gsi/gsi.c
+index b57f0840c..cf1cf019a 100644
+--- a/drivers/platform/msm/gsi/gsi.c
++++ b/drivers/platform/msm/gsi/gsi.c
+@@ -2709,7 +2709,7 @@ int gsi_write_channel_scratch(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_write_channel_scratch);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_write_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
+ 		union __packed gsi_wdi3_channel_scratch2_reg val)
+@@ -2743,7 +2743,7 @@ int gsi_write_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_write_wdi3_channel_scratch2_reg);
++/* KSU-build: export removed (genksyms) */
+ 
+ 
+ int gsi_read_channel_scratch(unsigned long chan_hdl,
+@@ -2777,7 +2777,7 @@ int gsi_read_channel_scratch(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_read_channel_scratch);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_read_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
+ 		union __packed gsi_wdi3_channel_scratch2_reg * val)
+@@ -2810,7 +2810,7 @@ int gsi_read_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_read_wdi3_channel_scratch2_reg);
++/* KSU-build: export removed (genksyms) */
+ 
+ 
+ int gsi_update_mhi_channel_scratch(unsigned long chan_hdl,
+@@ -2843,7 +2843,7 @@ int gsi_update_mhi_channel_scratch(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_update_mhi_channel_scratch);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_query_channel_db_addr(unsigned long chan_hdl,
+ 		uint32_t *db_addr_wp_lsb, uint32_t *db_addr_wp_msb)
+@@ -2877,7 +2877,7 @@ int gsi_query_channel_db_addr(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_query_channel_db_addr);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_start_channel(unsigned long chan_hdl)
+ {
+@@ -2954,7 +2954,7 @@ int gsi_start_channel(unsigned long chan_hdl)
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_start_channel);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_stop_channel(unsigned long chan_hdl)
+ {
+@@ -3032,7 +3032,7 @@ int gsi_stop_channel(unsigned long chan_hdl)
+ 	mutex_unlock(&gsi_ctx->mlock);
+ 	return res;
+ }
+-EXPORT_SYMBOL(gsi_stop_channel);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_stop_db_channel(unsigned long chan_hdl)
+ {
+@@ -3101,7 +3101,7 @@ int gsi_stop_db_channel(unsigned long chan_hdl)
+ 	mutex_unlock(&gsi_ctx->mlock);
+ 	return res;
+ }
+-EXPORT_SYMBOL(gsi_stop_db_channel);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_reset_channel(unsigned long chan_hdl)
+ {
+@@ -3198,7 +3198,7 @@ int gsi_reset_channel(unsigned long chan_hdl)
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_reset_channel);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_dealloc_channel(unsigned long chan_hdl)
+ {
+@@ -3266,7 +3266,7 @@ int gsi_dealloc_channel(unsigned long chan_hdl)
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_dealloc_channel);
++/* KSU-build: export removed (genksyms) */
+ 
+ void gsi_update_ch_dp_stats(struct gsi_chan_ctx *ctx, uint16_t used)
+ {
+@@ -3390,7 +3390,7 @@ int gsi_query_channel_info(unsigned long chan_hdl,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_query_channel_info);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_is_channel_empty(unsigned long chan_hdl, bool *is_empty)
+ {
+@@ -3471,7 +3471,7 @@ int gsi_is_channel_empty(unsigned long chan_hdl, bool *is_empty)
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_is_channel_empty);
++/* KSU-build: export removed (genksyms) */
+ 
+ int __gsi_get_gci_cookie(struct gsi_chan_ctx *ctx, uint16_t idx)
+ {
+@@ -3683,7 +3683,7 @@ int gsi_queue_xfer(unsigned long chan_hdl, uint16_t num_xfers,
+ 
+ 	return GSI_STATUS_SUCCESS;
+ }
+-EXPORT_SYMBOL(gsi_queue_xfer);
++/* KSU-build: export removed (genksyms) */
+ 
+ int gsi_start_xfer(unsigned long chan_hdl)
+ {

@@ -1,0 +1,11 @@
+# fetched by scripts/setup-toolchain.sh
+toolchain/
+
+# cloned at build time (kernel, KernelSU-Next, AnyKernel3)
+kernel/
+KernelSU-Next/
+AnyKernel3/
+
+# build output
+out/
+*.zip
