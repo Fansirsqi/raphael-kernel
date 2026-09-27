@@ -16,6 +16,15 @@ on:
         type: boolean
         required: false
         default: false
+      send_tg:
+        description: 'Send the flashable zip to the Telegram channel'
+        type: boolean
+        required: false
+        default: false
+      tg_caption:
+        description: 'Extra caption line for the Telegram post (optional)'
+        required: false
+        default: ''
   push:
     branches: [ main, master ]
     paths:
@@ -87,7 +96,8 @@ jobs:
           echo "KSU_COMMIT=$(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
           git -C KernelSU-Next log --oneline -1
           COUNT=$(git -C KernelSU-Next rev-list --count HEAD)
-          echo "KSU_VERSION=$((30000 + COUNT + 200))" >> "$GITHUB_ENV"
+          # Must match kernel/Kbuild's own offset (30000 + count + 289).
+          echo "KSU_VERSION=$((30000 + COUNT + 289))" >> "$GITHUB_ENV"
           TAG=$(git -C KernelSU-Next describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "KSU_TAG=$TAG" >> "$GITHUB_ENV"
 
@@ -168,6 +178,33 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
+
+      - name: Send flashable zip to Telegram
+        if: ${{ github.event.inputs.send_tg == 'true' || github.event_name == 'schedule' }}
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_CAPTION_EXTRA: ${{ github.event.inputs.tg_caption }}
+        run: |
+          set -e
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "::warning::TG_BOT_TOKEN / TG_CHAT_ID secrets are not configured; skipping Telegram upload"; exit 0
+          fi
+          CAPTION="<b>KernelSU-Next ${KSU_VERSION} for raphael</b>"
+          CAPTION="${CAPTION}"$'\n'"kernel: <code>${KERNEL_RELEASE}</code> (${KERNEL_COMMIT})"
+          CAPTION="${CAPTION}"$'\n'"ksu: <code>${KSU_TAG}</code> (${KSU_COMMIT})"
+          CAPTION="${CAPTION}"$'\n'"toolchain: clang r416183b + GNU ld 2.27"
+          if [ -n "$TG_CAPTION_EXTRA" ]; then
+            CAPTION="${CAPTION}"$'\n\n'"${TG_CAPTION_EXTRA}"
+          fi
+          curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TG_CHAT_ID}" \
+            -F "parse_mode=HTML" \
+            -F "caption=${CAPTION}" \
+            -F "document=@${ZIP_NAME}" \
+            -o tg-response.json
+          cat tg-response.json
+          grep -q '"ok":true' tg-response.json
 
       - name: Publish release
         if: ${{ github.event.inputs.release == 'true' }}
