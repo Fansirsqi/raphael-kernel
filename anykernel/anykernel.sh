@@ -1,11 +1,11 @@
 ### AnyKernel3 Ramdisk Mod Script
-## KernelSU-Next kernel for Xiaomi Redmi K20 Pro / Mi 9T Pro (raphael / raphaelin)
-## This file is copied into an upstream AnyKernel3 checkout by the CI workflow.
+## @KSU_NAME@ kernel for Xiaomi Redmi K20 Pro / Mi 9T Pro (raphael / raphaelin)
+## This file is a template; the CI workflow substitutes @KSU_NAME@ per variant.
 
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=KernelSU-Next Kernel for raphael
+kernel.string=@KSU_NAME@ Kernel for raphael
 do.devicecheck=1
 do.modules=0
 do.systemless=1

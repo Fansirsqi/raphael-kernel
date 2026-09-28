@@ -3,10 +3,19 @@ name: Build Kernel
 on:
   workflow_dispatch:
     inputs:
-      ksunext_ref:
-        description: 'KernelSU-Next ref (branch/tag/commit). legacy = non-GKI support'
+      su:
+        description: 'Root solution / integration variant'
+        type: choice
         required: true
-        default: 'legacy'
+        default: ksunext
+        options:
+          - ksunext          # KernelSU-Next, manual hook
+          - resukisu         # ReSukiSU, manual hook
+          - resukisu-susfs   # ReSukiSU, SUSFS inline hook
+      su_ref:
+        description: 'Root-solution ref (branch/tag/commit). Empty = variant default'
+        required: false
+        default: ''
       kernel_branch:
         description: 'kernel_xiaomi_raphael branch'
         required: true
@@ -33,7 +42,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/build.yml'
   schedule:
-    # Weekly, to pick up new KernelSU-Next (legacy) commits.
+    # Weekly, to pick up new upstream commits.
     - cron: '0 3 * * 6'
 
 permissions:
@@ -41,24 +50,84 @@ permissions:
 
 env:
   KERNEL_REPO: https://github.com/PixelExperience-Devices/kernel_xiaomi_raphael.git
-  KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+  KSUNEXT_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+  RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
   AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
+  # ccache: bound the cache and pin the compiler check so the (stable) pinned
+  # toolchain never forces a full cache invalidation on every run.
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPILERCHECK: string:raphael-pinned-toolchain
+  CCACHE_DIR: /home/runner/.ccache
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # workflow_dispatch: build just the chosen variant.
+        # push / schedule: build every variant so they all stay green.
+        variant: ${{ fromJSON( github.event_name == 'workflow_dispatch' && format('["{0}"]', github.event.inputs.su) || '["ksunext","resukisu","resukisu-susfs"]' ) }}
+
     steps:
       - name: Checkout this repository
         uses: actions/checkout@v4
+
+      - name: Resolve variant settings
+        env:
+          SU_INPUT: ${{ matrix.variant }}
+          SU_REF_INPUT: ${{ github.event.inputs.su_ref }}
+        run: |
+          set -e
+          case "$SU_INPUT" in
+            ksunext)
+              NAME="KernelSU-Next"
+              DIR="KernelSU-Next"
+              REPO="$KSUNEXT_REPO"
+              DEFAULT_REF="legacy"
+              HOOK_PATCH="patches/ksunext/0001-manual-hooks.patch"
+              VERSION_OFFSET=289
+              ;;
+            resukisu)
+              NAME="ReSukiSU"
+              DIR="ReSukiSU"
+              REPO="$RESUKISU_REPO"
+              DEFAULT_REF="main"
+              HOOK_PATCH="patches/resukisu/0001-manual-hooks.patch"
+              VERSION_OFFSET=700
+              ;;
+            resukisu-susfs)
+              NAME="ReSukiSU-SUSFS"
+              DIR="ReSukiSU"
+              REPO="$RESUKISU_REPO"
+              DEFAULT_REF="main"
+              HOOK_PATCH="patches/susfs/0001-susfs-inline-hooks.patch"
+              VERSION_OFFSET=700
+              ;;
+            *)
+              echo "!! unknown su variant: $SU_INPUT"; exit 1
+              ;;
+          esac
+          REF="${SU_REF_INPUT:-$DEFAULT_REF}"
+          {
+            echo "SU_VARIANT=$SU_INPUT"
+            echo "KSU_NAME=$NAME"
+            echo "KSU_DIR=$DIR"
+            echo "KSU_REPO=$REPO"
+            echo "KSU_REF=$REF"
+            echo "HOOK_PATCH=$HOOK_PATCH"
+            echo "KSU_VERSION_OFFSET=$VERSION_OFFSET"
+          } >> "$GITHUB_ENV"
+          echo "variant=$SU_INPUT name=$NAME ref=$REF patch=$HOOK_PATCH offset=$VERSION_OFFSET"
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev make zip unzip cpio rsync \
-            python3 python3-pip device-tree-compiler lz4 xz-utils zstd
+            python3 python3-pip device-tree-compiler lz4 xz-utils zstd ccache
 
       - name: Ensure GNU Make 4.3
         run: |
@@ -77,8 +146,24 @@ jobs:
             echo "MAKE_BIN=$(command -v make)" >> "$GITHUB_ENV"
           fi
 
+      # ~1.6 GB of pinned compiler, identical for every variant. Keyed on the
+      # fetch script, so bumping the toolchain re-downloads it exactly once.
+      - name: Restore toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchain
+          key: toolchain-${{ runner.os }}-${{ hashFiles('scripts/setup-toolchain.sh') }}
+
       - name: Fetch PE-matching toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: ./scripts/setup-toolchain.sh "$PWD/toolchain"
+
+      - name: Verify toolchain
+        run: |
+          toolchain/clang-r416183b/bin/clang --version | head -1
+          toolchain/gnu/bin/aarch64-linux-gnu-ld --version | head -1
+          test -x toolchain/gnu/bin/aarch64-linux-gnu-as
 
       - name: Clone kernel source
         run: |
@@ -87,30 +172,43 @@ jobs:
           echo "KERNEL_COMMIT=$(git -C kernel rev-parse --short HEAD)" >> "$GITHUB_ENV"
           git -C kernel log --oneline -1
 
-      - name: Clone KernelSU-Next
-        env:
-          KSU_REF: ${{ github.event.inputs.ksunext_ref || 'legacy' }}
+      - name: Clone ${{ env.KSU_NAME }}
         run: |
-          # Full clone: the version number is derived from the commit count.
-          git clone -b "$KSU_REF" "$KSU_REPO" KernelSU-Next
-          echo "KSU_COMMIT=$(git -C KernelSU-Next rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          git -C KernelSU-Next log --oneline -1
-          COUNT=$(git -C KernelSU-Next rev-list --count HEAD)
-          # Must match kernel/Kbuild's own offset (30000 + count + 289).
-          echo "KSU_VERSION=$((30000 + COUNT + 289))" >> "$GITHUB_ENV"
-          TAG=$(git -C KernelSU-Next describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # Full clone: both variants derive the version code from the commit count.
+          git clone -b "$KSU_REF" "$KSU_REPO" "$KSU_DIR"
+          echo "KSU_COMMIT=$(git -C "$KSU_DIR" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          git -C "$KSU_DIR" log --oneline -1
+          COUNT=$(git -C "$KSU_DIR" rev-list --count HEAD)
+          VER=$((30000 + COUNT + KSU_VERSION_OFFSET))
+          echo "KSU_VERSION=$VER" >> "$GITHUB_ENV"
+          TAG=$(git -C "$KSU_DIR" describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "KSU_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "$KSU_NAME $TAG version $VER (commit count $COUNT + offset $KSU_VERSION_OFFSET)"
+
+      # Restored before the build; actions/cache saves the updated tree at job end.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.SU_VARIANT }}-${{ env.KERNEL_COMMIT }}-${{ env.KSU_COMMIT }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.SU_VARIANT }}-${{ env.KERNEL_COMMIT }}-${{ env.KSU_COMMIT }}-
+            ccache-${{ env.SU_VARIANT }}-${{ env.KERNEL_COMMIT }}-
+            ccache-${{ env.SU_VARIANT }}-
 
       - name: Apply integration patches
         run: |
           set -e
           cd kernel
-          for p in ../patches/*.patch; do
-            echo "==> applying $(basename "$p")"
-            # Fail loudly: a silent mis-integration is worse than a red build.
-            git apply --verbose "$p"
+          # common/ first (non-GKI backports + genksyms workaround), then the
+          # variant's hook patch. Every patch is applied as a normal patch so
+          # all translation units see the backports -- upstream Kbuild only
+          # injects them mid-build, after fs/ has already been compiled.
+          for p in ../patches/common/*.patch "../$HOOK_PATCH"; do
+            echo "==> applying $p"
+            git apply --verbose --whitespace=nowarn "$p"
           done
-          ln -sfn ../../KernelSU-Next/kernel drivers/kernelsu
+          ln -sfn "../../$KSU_DIR/kernel" drivers/kernelsu
           ls -l drivers/kernelsu
           cd ..
           echo "=== defconfig KSU entries ==="
@@ -122,7 +220,7 @@ jobs:
           export PATH="$PWD/toolchain/clang-r416183b/bin:$PWD/toolchain/gnu/bin:$PATH"
           MAKE_ARGS=(
             O=out ARCH=arm64
-            CC=clang
+            CC="ccache clang"
             LD=aarch64-linux-gnu-ld
             CLANG_TRIPLE=aarch64-linux-gnu-
             CROSS_COMPILE=aarch64-linux-gnu-
@@ -131,15 +229,25 @@ jobs:
           echo "=== toolchain ==="
           clang --version | head -1
           aarch64-linux-gnu-ld --version | head -1
-          aarch64-linux-gnu-as --version | head -1
+          echo "=== ccache ==="
+          ccache --version | head -1
+          ccache -z
           cd kernel
           "$MAKE_BIN" "${MAKE_ARGS[@]}" raphael_defconfig
           "$MAKE_BIN" "${MAKE_ARGS[@]}" -j"$(nproc)"
           "$MAKE_BIN" "${MAKE_ARGS[@]}" Image.gz-dtb dtbo.img
 
+          echo "=== ccache stats ==="
+          ccache -s
+
           echo "=== verification ==="
           grep -E "ksu_handle_(execveat|setresuid|sys_reboot|stat|faccessat|sys_read|input_handle_event)" \
             out/System.map || { echo "!! KernelSU hooks missing"; exit 1; }
+          # path_umount comes from the common non-GKI backport patch.
+          grep -qE " path_umount$" out/System.map || { echo "!! path_umount missing"; exit 1; }
+          if [ "$SU_VARIANT" = "resukisu-susfs" ]; then
+            grep -qE "susfs_add_sus_path" out/System.map || { echo "!! SUSFS symbols missing"; exit 1; }
+          fi
           strings out/vmlinux | grep -m1 "Linux version"
           echo "KERNEL_RELEASE=$(cat out/include/config/kernel.release)" >> "$GITHUB_ENV"
 
@@ -149,13 +257,13 @@ jobs:
           git clone --depth 1 "$AK3_REPO" AnyKernel3
           cd AnyKernel3
           rm -rf .git .github
-          # Our installer: split_boot+flash_boot (no ramdisk in boot.img on this device)
-          cp ../anykernel/anykernel.sh anykernel.sh
+          # Installer is templated per variant (kernel.string).
+          sed "s/@KSU_NAME@/${KSU_NAME}/g" ../anykernel/anykernel.sh > anykernel.sh
           cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
           # dtbo.img is intentionally not shipped: identical to stock, and the
           # dtbo partition carries AVB metadata the installer must not disturb.
           rm -f dtbo.img
-          ZIP="KernelSU-Next-raphael-${KERNEL_RELEASE}-${KSU_TAG}-${KSU_VERSION}-$(date +%Y%m%d).zip"
+          ZIP="${KSU_NAME}-raphael-${KERNEL_RELEASE}-${KSU_TAG}-${KSU_VERSION}-$(date +%Y%m%d).zip"
           zip -r9 "../$ZIP" . -x ".git/*" -x "README.md" >/dev/null
           echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
           cd ..
@@ -165,7 +273,7 @@ jobs:
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-images-${{ env.KSU_COMMIT }}
+          name: kernel-images-${{ env.SU_VARIANT }}-${{ env.KSU_COMMIT }}
           path: |
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/System.map
@@ -190,7 +298,7 @@ jobs:
           if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
             echo "::warning::TG_BOT_TOKEN / TG_CHAT_ID secrets are not configured; skipping Telegram upload"; exit 0
           fi
-          CAPTION="<b>KernelSU-Next ${KSU_VERSION} for raphael</b>"
+          CAPTION="<b>${KSU_NAME} ${KSU_VERSION} for raphael</b>"
           CAPTION="${CAPTION}"$'\n'"kernel: <code>${KERNEL_RELEASE}</code> (${KERNEL_COMMIT})"
           CAPTION="${CAPTION}"$'\n'"ksu: <code>${KSU_TAG}</code> (${KSU_COMMIT})"
           CAPTION="${CAPTION}"$'\n'"toolchain: clang r416183b + GNU ld 2.27"
@@ -210,14 +318,14 @@ jobs:
         if: ${{ github.event.inputs.release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.KSU_TAG }}-${{ env.KERNEL_COMMIT }}-${{ github.run_number }}
-          name: KernelSU-Next ${{ env.KSU_VERSION }} for raphael (${{ env.KERNEL_RELEASE }})
+          tag_name: ${{ env.SU_VARIANT }}-${{ env.KSU_TAG }}-${{ env.KERNEL_COMMIT }}-${{ github.run_number }}
+          name: ${{ env.KSU_NAME }} ${{ env.KSU_VERSION }} for raphael (${{ env.KERNEL_RELEASE }})
           body: |
-            KernelSU-Next `${{ env.KSU_TAG }}` (version `${{ env.KSU_VERSION }}`, commit `${{ env.KSU_COMMIT }}`)
+            ${{ env.KSU_NAME }} `${{ env.KSU_TAG }}` (version `${{ env.KSU_VERSION }}`, commit `${{ env.KSU_COMMIT }}`)
             built on kernel `${{ env.KERNEL_RELEASE }}` (`${{ env.KERNEL_COMMIT }}`).
 
             - Device: Xiaomi Redmi K20 Pro / Mi 9T Pro (raphael / raphaelin)
-            - Mode: manual hook (non-GKI)
+            - Variant: `${{ env.SU_VARIANT }}`
             - Toolchain: Android clang r416183b + GNU ld 2.27
 
             Flash the zip in a third-party recovery. The stock ramdisk is preserved.
