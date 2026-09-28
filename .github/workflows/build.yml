@@ -55,7 +55,9 @@ env:
   AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
   # ccache: bound the cache and pin the compiler check so the (stable) pinned
   # toolchain never forces a full cache invalidation on every run.
-  CCACHE_MAXSIZE: 2G
+  # 1.5 GB per variant; with the toolchain that stays well under the 10 GB
+  # repository cache limit, so older entries are not evicted mid-warmup.
+  CCACHE_MAXSIZE: 1500M
   CCACHE_COMPILERCHECK: string:raphael-pinned-toolchain
   CCACHE_DIR: /home/runner/.ccache
 
@@ -195,6 +197,7 @@ jobs:
             ccache-${{ env.SU_VARIANT }}-${{ env.KERNEL_COMMIT }}-${{ env.KSU_COMMIT }}-
             ccache-${{ env.SU_VARIANT }}-${{ env.KERNEL_COMMIT }}-
             ccache-${{ env.SU_VARIANT }}-
+            ccache-
 
       - name: Apply integration patches
         run: |
